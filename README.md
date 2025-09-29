@@ -46,7 +46,7 @@ The listed components fit into the provided 3D printed case. You can also use ot
 This case is designed to be placed into a 6x [f-tronic small distribution box](https://www.f-tronic.de/de/produkte/installationsverteiler/kleinverteiler/ap-feuchtraumverteiler/95/fr-kleinverteiler-ip55-1-reihig.html?number=7240051)
 As power-supply a [Phoenix Contact 15w USB-C power supply](https://www.phoenixcontact.com/de-de/produkte/stromversorgung-step3-ps-1ac-5dc-3-pt-usb-c-1335698) can be used.
 
-* 1x printed 3d Case TODO
+* 1x printed [3d Case](https://www.printables.com/model/1429312-traffic-light-controller)
 * 3x [DIN Rail Clip](https://www.printables.com/model/537942-din-rail-clip-heat-insert-version/files)
 * 14x M2 heat inserts (4mm height)
 * 10x M3 heat inserts (4mm height)
