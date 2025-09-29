@@ -1,4 +1,4 @@
-# traffic-light
+# traffic-light-controller
 
 ![traffic-light](./images/img017.jpg)
 
