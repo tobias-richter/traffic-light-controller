@@ -1,0 +1,60 @@
+color:
+  - id: color_white
+    red_int: 255
+    green_int: 255
+    blue_int: 255
+
+  - id: color_black
+    red_int: 0
+    green_int: 0
+    blue_int: 0
+
+  - id: color_red
+    red_int: 255
+    green_int: 0
+    blue_int: 0
+
+  - id: color_green
+    red_int: 0
+    green_int: 255
+    blue_int: 0
+
+  - id: color_yellow
+    red_int: 255
+    green_int: 255
+    blue_int: 0
+
+  - id: color_blue
+    red_int: 0
+    green_int: 0
+    blue_int: 255
+
+  - id: color_mid_grey
+    red_int: 128
+    green_int: 128
+    blue_int: 128
+
+  - id: color_dark_grey
+    red_int: 96
+    green_int: 96
+    blue_int: 96
+
+  - id: color_very_dark_grey
+    red_int: 24
+    green_int: 24
+    blue_int: 24
+
+  - id: color_light_blue
+    red_int: 38
+    green_int: 198
+    blue_int: 218
+
+  - id: color_background_blue
+    red_int: 3
+    green_int: 140
+    blue_int: 225
+
+  - id: color_background_green
+    red_int: 4
+    green_int: 116
+    blue_int: 19

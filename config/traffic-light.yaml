@@ -1,0 +1,688 @@
+### BASE
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+packages:
+  # enables development settings
+  # development: !include includes/development.yaml
+  production: !include includes/production.yaml
+  color: !include includes/color.yaml
+  font: !include includes/font.yaml
+
+spi:
+  clk_pin: 17
+  mosi_pin: 21
+
+substitutions:
+  mac_traffic_light_remote: !secret mac_traffic_light_remote
+
+### ESPHOME
+
+esphome:
+  name: traffic-light
+  on_boot:
+    then:
+      - switch.turn_on: relay_red
+      - delay: 3s
+      - select.set:
+          id: current_display_page
+          option: run
+      - delay: 2s
+      - select.set: 
+            id: operation_mode
+            option: Automatik
+      - espnow.send:
+          address: $mac_traffic_light_remote
+          data: "ping"
+
+### CONFIG
+
+binary_sensor:
+  - platform: gpio
+    name: Display Button
+    pin:
+      number: GPIO41
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_click:
+      then:
+        - if:
+            condition:
+              lambda: |-                
+                return id(current_display_page).state == "run";
+            then:
+              - select.set:
+                  id: current_display_page
+                  option: qrcode
+            else:
+              - select.set:
+                  id: current_display_page
+                  option: run
+            
+  - platform: gpio
+    name: operation mode
+    id: binary_sensor_operation_mode
+    pin:
+      number: GPIO1
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_click:
+      then:
+        - select.next:
+            id: operation_mode
+
+  - platform: gpio
+    name: Change delay
+    id: binary_sensor_pause
+    pin:
+      number: GPIO2
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_click:
+      then:
+        - button.press: button_increase_delay
+
+  - platform: gpio
+    name: Knopf Grün
+    id: binary_sensor_green
+    pin:
+      number: GPIO39
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_click:
+      then:
+        - select.set:
+            id: operation_mode
+            option: Manuell
+        - select.set:
+            id: target_light_state
+            option: green
+        - script.execute: script_switch_traffic_light
+
+  - platform: gpio
+    name: Button red
+    id: binary_sensor_red
+    pin:
+      number: GPIO38
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_click:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(traffic_light_switching) == false;'
+            then:
+              - select.set:
+                  id: operation_mode
+                  option: Manuell
+              - select.set:
+                  id: target_light_state
+                  option: red
+              - script.execute: script_switch_traffic_light
+
+button:
+  - platform: template
+    name: Change traffic light
+    icon: mdi:traffic-light
+    id: button_switch_traffic_light
+    on_press:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(traffic_light_switching) == false;'
+            then:
+              - select.set: 
+                  id: operation_mode
+                  option: Manuell
+              - script.execute: script_switch_traffic_light
+
+  - platform: template
+    name: Ampel Modus ändern
+    id: button_switch_traffic_light_mode
+    on_press:
+      then:
+        - select.next: operation_mode
+
+  - platform: template
+    name: Pause verringern
+    id: button_decrease_delay
+    on_press: 
+      then:
+        - logger.log: decrement delay
+        - select.previous: traffic_light_switch_delay
+
+  - platform: template
+    name: Pause erhöhen
+    id: button_increase_delay
+    on_press: 
+      then:
+        - logger.log: increment delay
+        - select.next: traffic_light_switch_delay
+
+display:
+  - platform: ili9xxx
+    model: ST7789V
+    id: display_tft
+    dimensions:
+      height: 128
+      width: 128
+      offset_height: 1
+      offset_width: 2
+    rotation: 180
+    invert_colors: true
+    cs_pin: 15
+    dc_pin: 33
+    reset_pin: 34
+    update_interval: 50ms
+    pages: 
+      - id: boot
+        lambda: |- 
+          it.image(0, 0, id(image_bootimage));
+
+      - id: run
+        lambda: |- 
+
+          auto max = 127;
+          auto size = 10;
+
+          auto traffic_lights_radius = 8;
+          auto traffic_lights_x = it.get_width()-traffic_lights_radius-4;
+          auto traffic_lights_spacing = (traffic_lights_radius*2)+3;
+
+          auto traffic_lights_red_y = 4+traffic_lights_radius;
+          auto traffic_lights_yellow_y = traffic_lights_red_y+traffic_lights_spacing;
+          auto traffic_lights_green_y = traffic_lights_yellow_y+traffic_lights_spacing;
+
+          it.image(0, 0, id(image_background));
+
+          /*
+          * Draw information
+          */
+
+          // display mode
+          it.print(4, 4, id(font_default_large), id(color_very_dark_grey), TextAlign::TOP_LEFT, "Modus", id(color_background_blue));
+          it.printf(4, 20, id(font_default_large_bold), id(color_black), id(color_background_blue), TextAlign::TOP_LEFT, "%s", id(operation_mode).state.c_str());
+          
+          // display automatic mode values
+          it.print(4, 40, id(font_default_large), id(color_very_dark_grey), TextAlign::TOP_LEFT, "Pause", id(color_background_blue));
+          it.printf(4, 56, id(font_default_large_bold), id(color_black), id(color_background_blue), TextAlign::TOP_LEFT, "%s Sekunden", id(traffic_light_switch_delay).state.c_str());
+                
+          if (!id(connection_connected)) {
+            it.print(2, it.get_height()-2, id(icon_font), id(color_black), TextAlign::BOTTOM_LEFT, "\U000F0EC4", id(color_background_green));
+          } else {
+            it.print(2, it.get_height()-2, id(icon_font), id(color_black), TextAlign::BOTTOM_LEFT, "\U000F0454", id(color_background_green));
+          }
+
+          /*
+          * draw progress
+          */
+          
+          // calculate text
+          float total_milliseconds = id(_glbl_update_interval_ms) * id(glbl_timeout_length_ticks);
+          float current_milliseconds = id(_glbl_update_interval_ms) * id(_glbl_timeout_ticks);
+          float remaining_seconds = (total_milliseconds - current_milliseconds) / 1000;
+
+          if (id(operation_mode).state == "Automatik") {
+            it.printf(it.get_width()-4, 4, id(font_default_large), id(color_very_dark_grey), id(color_background_blue), TextAlign::TOP_RIGHT , "%.1f", remaining_seconds);
+          }
+          
+          /*
+          * LIGHTS
+          */
+
+          // status
+
+          // red light
+          if(id(relay_red).state) {
+            it.image(94,42, id(image_red_on));
+          }
+
+          // yellow light
+          if(id(relay_yellow).state) {
+            it.image(94,52, id(image_yellow_on));
+          }
+
+          // green light
+          if(id(relay_green).state) {
+            it.image(94,62, id(image_green_on));
+          }
+      - id: qrcode
+        lambda: |- 
+          it.image(0, 0, id(image_qrcode));
+
+espnow:
+  id: my_espnow
+  peers:
+    - $mac_traffic_light_remote
+  on_receive:
+    then:
+      - logger.log:
+          format: "Sent to %s from %s: %s RSSI: %ddBm"
+          level: INFO
+          args:
+            - format_mac_address_pretty(info.des_addr).c_str()
+            - format_mac_address_pretty(info.src_addr).c_str()
+            - format_hex_pretty(data, size).c_str()
+            - info.rx_ctrl->rssi
+      - lambda: |-
+          std::string received_command(reinterpret_cast<const char*>(data), size);
+          
+          if (received_command == "switch_traffic_light") {
+            id(button_switch_traffic_light).press();
+          } else if (received_command == "om_Automatik") {
+            auto operation_mode_call = id(operation_mode).make_call();
+            operation_mode_call.set_option("Automatik");
+            operation_mode_call.perform();
+          } else if (received_command == "traffic_light_switch_delay") {
+            auto traffic_light_switch_delay_call = id(traffic_light_switch_delay).make_call();
+            traffic_light_switch_delay_call.select_next(true);
+            traffic_light_switch_delay_call.perform();
+          }
+          else if (received_command == "ping") {
+            id(send_update).execute();
+          }
+          // set connected state to true
+          id(connection_connected) = true;
+
+globals:
+  - id: glbl_relay_latched
+    type: bool
+    restore_value: yes
+    initial_value: "true"
+
+  - id: glbl_timeout_length_ticks
+    type: int
+    restore_value: no
+    # 3 seconds = 3000ms / _glbl_update_interval_ms (100)
+    initial_value: "30"
+
+  - id: _glbl_timeout_ticks
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  - id: _glbl_update_interval_ms
+    type: int
+    restore_value: no
+    initial_value: "100"
+
+  - id: connection_connected
+    type: bool
+    initial_value: "false"
+
+  - id: traffic_light_switching
+    type: bool
+    initial_value: "false"
+
+image:
+  - file: "images/traffic-light/bootimage.png"
+    type: RGB565
+    id: image_bootimage
+
+  - file: "images/traffic-light/qrcode.png"
+    type: BINARY
+    id: image_qrcode
+  
+  - file: "images/traffic-light/sunflower003_all_off.png"
+    type: RGB565
+    id: image_background
+
+  - file: "images/traffic-light/sunflower003_green_on.png"
+    type: RGB565
+    id: image_green_on
+
+  - file: "images/traffic-light/sunflower003_yellow_on.png"
+    type: RGB565
+    id: image_yellow_on
+
+  - file: "images/traffic-light/sunflower003_red_on.png"
+    type: RGB565
+    id: image_red_on
+
+light:
+  - platform: monochromatic
+    output: backlight_led
+    restore_mode: RESTORE_DEFAULT_ON
+    name: "Backlight"
+    id: backlight_light
+
+output:
+  - platform: ledc
+    pin: 16
+    min_power: 0.65
+    max_power: 0.99
+    zero_means_zero: true
+    id: backlight_led
+
+script:
+  - id: send_update
+    mode: queued
+    then:
+      - espnow.send:
+          address: $mac_traffic_light_remote
+          data: !lambda  |-
+              std::string operation_mode_state = id(operation_mode).state;
+              std::string msg = "om_" + operation_mode_state;
+              //convert to bytes
+              std::vector<uint8_t> data(msg.begin(), msg.end());
+              return data;
+      - espnow.send:
+          address: $mac_traffic_light_remote
+          data: !lambda  |-
+              std::string delay = id(traffic_light_switch_delay).state;
+              std::string msg = "delay_" + delay;
+              //convert to bytes
+              std::vector<uint8_t> data(msg.begin(), msg.end());
+              return data;
+      - espnow.send:
+          address: $mac_traffic_light_remote
+          data: !lambda  |-
+              std::string light_state = id(current_light_state).state;
+              std::string msg = "current_light_state_" + light_state;
+              //convert to bytes
+              std::vector<uint8_t> data(msg.begin(), msg.end());
+              return data;
+
+    # End meaning the natural conclusion of the timer. Do whatever we're supposed to do when the timer fires off
+  - id: on_timer_end
+    mode: single
+    then:
+      - script.execute: script_switch_traffic_light
+
+    # Stop meaning the pre-mature ending of the timer
+  - id: on_timer_stop
+    # Do not start a new run. Issue a warning.
+    mode: single
+    then:
+        # For now, just clean up the globals and stop the ticking.
+        # This hook could be used to do so much more, though.
+        ##
+      - lambda: |-
+          auto TAG = "script.on_timer_stop";
+
+          id(_timer_tick).stop();
+          id(_glbl_timeout_ticks) = 0;
+          //ESP_LOGD(TAG, "_timer_tick now stopped and _glbl_timeout_ticks is %d", id(_glbl_timeout_ticks));          
+
+  - id: _timer_tick
+    # Start a new run after previous runs completes. This will happen until timer.stop() is called on us
+    ##
+    mode: queued
+    then:
+      - lambda: |-
+          //uint32_t converted_update_interval_ms = static_cast<uint32_t>(id(_glbl_update_interval_ms));
+          //delay(converted_update_interval_ms);  // Delay for 5000 milliseconds (5 seconds)
+          delay((int) id(_glbl_update_interval_ms));
+
+          auto TAG = "lambda._timer_tick";
+
+          // First, update the number of ticks
+          id(_glbl_timeout_ticks) += 1;
+
+          // Then check if we have timed out
+          if (id(_glbl_timeout_ticks) >= id(glbl_timeout_length_ticks) ) {
+
+            // If we have timed out, run the script to handle the timer expiration
+            // It's cleaner to call out to a script rather than put all the "what no?" code in here!
+            id(on_timer_end).execute();
+
+            // ESP_LOGD(TAG, "_glbl_timeout_ticks is >= glbl_timeout_length_ticks  %d >= %d ", id(_glbl_timeout_ticks), id(glbl_timeout_length_ticks) );
+
+            // And then re-set the internal counter
+            id(_glbl_timeout_ticks) = 0;
+
+            // And finally, stop the ticking timer
+            id(_timer_tick).stop();
+            //ESP_LOGD(TAG, "_timer_tick now stopped!");
+
+          } else {
+
+            //ESP_LOGD(TAG, "_glbl_timeout_ticks is < glbl_timeout_length_ticks  %d < %d ", id(_glbl_timeout_ticks), id(glbl_timeout_length_ticks) );
+
+            // make sure we run again.. unless we're not supposed to
+            if( id(operation_mode).state == "Automatik" ) {
+              id(_timer_tick).execute();
+            }
+          }
+  - id: script_switch_traffic_light
+    then:
+      - if: 
+          condition:
+            lambda: 'return id(target_light_state).state == "red" && id(current_light_state).state == id(target_light_state).state && id(traffic_light_switching) == false;'
+          then:
+            - logger.log: "> switching to green"
+            - globals.set:
+                id: traffic_light_switching
+                value: "true"
+            - select.set:
+                id: target_light_state
+                option: green
+            - select.set:
+                id: current_light_state
+                option: red-to-green
+            - delay: 1s
+            - select.set:
+                id: current_light_state
+                option: green
+            - globals.set:
+                id: traffic_light_switching
+                value: "false"
+          else:
+            - logger.log: "> not switching to green"
+            - if: 
+                condition:
+                  lambda: 'return id(target_light_state).state == "green" && id(current_light_state).state == id(target_light_state).state && id(traffic_light_switching) == false;'
+                then:
+                  - logger.log: "> switching to red"
+                  - globals.set:
+                      id: traffic_light_switching
+                      value: "true"
+                  - select.set:
+                      id: target_light_state
+                      option: red
+                  - select.set:
+                      id: current_light_state
+                      option: green-to-red
+                  - delay: 3s
+                  - select.set:
+                      id: current_light_state
+                      option: red
+                  - globals.set:
+                      id: traffic_light_switching
+                      value: "false"
+                else:
+                  - logger.log: "> not switching to red"
+
+select:
+  - platform: template
+    id: current_display_page
+    name: current_display_page
+    options: 
+      - boot
+      - run
+      - qrcode
+    initial_option: boot
+    optimistic: True
+    set_action: 
+      then:
+        - if:
+            condition:
+              lambda: return x == "boot";
+            then:
+              - display.page.show: boot
+        - if:
+            condition:
+              lambda: return x == "run";
+            then:
+              - display.page.show: run
+        - if:
+            condition:
+              lambda: return x == "qrcode";
+            then:
+              - display.page.show: qrcode
+
+  - platform: template
+    id: target_light_state
+    name: target_light_state
+    options: 
+      - red
+      - green
+    initial_option: red
+    optimistic: true
+    set_action:
+      - logger.log:
+          format: "set_action: target_light_state: %s"
+          args: ["x.c_str()"]
+
+  - platform: template
+    id: traffic_light_switch_delay
+    name: traffic_light_switch_delay
+    options: 
+      - "1"
+      - "2"
+      - "3"
+      - "5"
+      - "7"
+      - "9"
+      - "11"
+    initial_option: "3"
+    optimistic: true
+    set_action:
+      then:
+        - globals.set:
+            id: glbl_timeout_length_ticks
+            value: !lambda |-
+              int xInt = atoi(x.c_str());
+              // ensure ticks are correctly calculated
+              return (int) xInt*(1000 / id(id(_glbl_update_interval_ms)));
+    on_value: 
+      then:
+        - script.execute: send_update
+  
+  - platform: template
+    id: current_light_state
+    name: current_light_state
+    options: 
+      - red
+      - red-to-green
+      - green
+      - green-to-red
+    initial_option: red
+    optimistic: true
+    set_action:
+      - if:
+          condition: 
+            lambda: return x == "red";
+          then:
+            #- logger.log: state red
+            - switch.turn_on: relay_red
+            - switch.turn_off: relay_yellow
+            - switch.turn_off: relay_green
+            - espnow.send: 
+                address: $mac_traffic_light_remote
+                data: "current_light_state_red"
+            # start timer again
+            - if:
+                condition: 
+                  lambda: 'return id(operation_mode).state == "Automatik";'
+                then:
+                  - script.execute: _timer_tick
+      - if:
+          condition:
+            lambda: return x == "red-to-green";
+          then:
+            #- logger.log: state red-to-green
+            - switch.turn_on: relay_red
+            - switch.turn_on: relay_yellow
+            - switch.turn_off: relay_green
+            - espnow.send: 
+                address: $mac_traffic_light_remote
+                data: "current_light_state_red-to-green"
+      - if:
+          condition:
+            lambda: return x == "green";
+          then:
+            #- logger.log: state green
+            - switch.turn_off: relay_red
+            - switch.turn_off: relay_yellow
+            - switch.turn_on: relay_green
+            # start timer again
+            - if:
+                condition: 
+                  lambda: 'return id(operation_mode).state == "Automatik";'
+                then:
+                  - script.execute: _timer_tick
+            - espnow.send: 
+                address: $mac_traffic_light_remote
+                data: "current_light_state_green"
+      - if:
+          condition:
+            lambda: return x == "green-to-red";
+          then:
+            #- logger.log: state green-to-red
+            - switch.turn_off: relay_red
+            - switch.turn_on: relay_yellow
+            - switch.turn_off: relay_green
+            - espnow.send: 
+                address: $mac_traffic_light_remote
+                data: "current_light_state_green-to-red"
+
+  - platform: template
+    id: operation_mode
+    name: operation_mode
+    options: 
+      - Manuell
+      - Automatik
+    initial_option: Automatik
+    optimistic: true
+    set_action:
+      - logger.log:
+          format: "operation_mode: %s"
+          args: ["x.c_str()"]
+      - if:
+          condition: 
+            lambda: 'return x == "Automatik";'
+          then:
+            - logger.log: Automatik mode detected, starting timer
+            - script.execute: script_switch_traffic_light
+          else:
+            - logger.log: Manual mode detected, stopping timer
+            - script.stop: _timer_tick
+            - globals.set: 
+                id: _glbl_timeout_ticks
+                value: "0"
+      
+    on_value: 
+      then:
+        - script.execute: send_update
+        
+switch:
+  - platform: gpio
+    id: relay_green
+    name: "Relay green"
+    pin: GPIO5
+    inverted: True
+
+  - platform: gpio
+    id: relay_yellow
+    name: "Relay yellow"
+    pin: GPIO6
+    inverted: True
+
+  - platform: gpio
+    id: relay_red
+    name: "Relay red"
+    pin: GPIO7
+    inverted: True

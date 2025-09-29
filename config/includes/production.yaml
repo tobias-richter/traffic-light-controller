@@ -1,0 +1,6 @@
+# Enable logging
+logger:
+  level: WARN
+
+espnow:
+  channel: 1

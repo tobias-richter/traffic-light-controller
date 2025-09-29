@@ -1,0 +1,392 @@
+### BASE
+esp32:
+  board: m5stick-c
+  framework:
+    type: esp-idf
+
+packages:
+  # enables development settings
+  # development: !include includes/development.yaml
+  production: !include includes/production.yaml
+  color: !include includes/color.yaml
+  font: !include includes/font.yaml
+
+i2c:
+  sda: 21
+  scl: 22
+  scan: true
+
+spi:
+  clk_pin: GPIO13
+  mosi_pin: GPIO15
+
+substitutions:
+  mac_traffic_light: !secret mac_traffic_light
+
+### ESPHOME
+
+esphome:
+  name: traffic-light-remote
+  platformio_options:
+    upload_speed: 115200
+  on_boot: 
+    priority: -300
+    then:
+      - logger.log:
+          format: "on boot!"
+          level: INFO
+      - espnow.send:
+          address: $mac_traffic_light
+          data: "ping"
+      - component.update: battery_charge_level
+
+### CONFIG
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO37
+      inverted: true
+    name: Button Modus
+    on_click: 
+      then:
+        - logger.log: 
+            format: "clicked"
+            level: INFO
+        - espnow.send:
+            address: $mac_traffic_light
+            data: "switch_traffic_light"
+    on_multi_click:
+    - timing:
+        - ON for at least 500ms
+      then:
+        - espnow.send:
+            address: $mac_traffic_light
+            data: "om_Automatik"
+        - logger.log: 
+            format: "on hold -> automatik"
+            level: INFO
+        - output.turn_on: buzzer
+        - output.ledc.set_frequency:
+            id: buzzer
+            frequency: "800Hz"
+        - delay: 50ms
+        - output.turn_off: buzzer
+       
+  - platform: gpio
+    pin:
+      number: GPIO39
+      inverted: true
+    name: Button B
+    on_press: 
+      then:
+        - display.page.show: help
+    on_release: 
+      then:
+        - if:
+            condition:
+              lambda: 'return id(connection_connected) == true;'
+            then:
+              - display.page.show: run
+            else:
+              - display.page.show: help
+
+  - platform: gpio
+    pin:
+      number: GPIO35
+      inverted: true
+    name: Button C
+    on_click: 
+      then:
+        - logger.log: clicked
+        - espnow.send:
+             address: $mac_traffic_light
+             data: "traffic_light_switch_delay"
+
+display:
+  - platform:  st7789v
+    id: my_display
+    model: TTGO TDisplay 135x240
+    cs_pin: GPIO5
+    dc_pin: GPIO14
+    reset_pin: GPIO12
+    rotation: 90
+    update_interval: 1000ms
+    pages:
+      - id: help
+        lambda: |-
+          it.image(0,0, id(background_help));
+
+          // draw connection text
+          it.print(2, it.get_height() / 2, id(font_default_large_bold), id(color_mid_grey), TextAlign::CENTER_RIGHT, "Verbinden ...", id(color_black));
+
+          // draw status
+          id(draw_status_icons).execute();
+      
+      - id: run
+        lambda: |-
+          it.image(0,0, id(image_background));
+          
+          // draw status
+          id(draw_status_icons).execute();
+
+          // display mode
+          it.print(4, 4, id(font_default_xlarge), id(color_very_dark_grey), TextAlign::TOP_LEFT, "Modus", id(color_background_blue));
+          it.printf(4, 26, id(font_default_xlarge_bold), id(color_black), id(color_background_blue), TextAlign::TOP_LEFT, "%s", id(operation_mode).state.c_str());
+          
+          // display automatic mode values
+          it.print(4, 52, id(font_default_xlarge), id(color_very_dark_grey), TextAlign::TOP_LEFT, "Pause", id(color_background_blue));
+          it.printf(4, 74, id(font_default_xlarge_bold), id(color_black), id(color_background_blue), TextAlign::TOP_LEFT, "%.0f Sekunden", id(traffic_light_switch_delay).state);
+
+          // battery
+          it.print(it.get_width() - 2, 2, id(icon_font), id(color_white), TextAlign::TOP_RIGHT, "\U000F007A", id(color_black));
+
+          if (!id(connection_connected)) {
+            it.print(it.get_width() - 20, 2, id(icon_font), id(color_white), TextAlign::TOP_RIGHT, "\U000F0EC4", id(color_black));
+          } else {
+            it.print(it.get_width() - 20, 2, id(icon_font), id(color_white), TextAlign::TOP_RIGHT, "\U000F0454", id(color_black));
+          }
+
+          /*
+          * LIGHTS
+          */
+
+          // status
+
+          // red light
+          if(id(current_light_state).state == "red" || id(current_light_state).state == "red-to-green") {
+            it.image(192,44, id(image_red_on));
+          }
+
+          // yellow light
+          if(id(current_light_state).state == "red-to-green" || id(current_light_state).state == "green-to-red") {
+            it.image(192,55, id(image_yellow_on));
+          }
+
+          // green light
+          if(id(current_light_state).state == "green") {
+            it.image(192,66, id(image_green_on));
+          }
+
+espnow:
+  peers:
+    - $mac_traffic_light
+  on_receive:
+    then:
+      - logger.log:
+          format: "Sent to %s from %s: %s RSSI: %ddBm"
+          level: INFO
+          args:
+            - format_mac_address_pretty(info.des_addr).c_str()
+            - format_mac_address_pretty(info.src_addr).c_str()
+            - format_hex_pretty(data, size).c_str()
+            - info.rx_ctrl->rssi
+      - lambda: |-
+          std::string received_command(reinterpret_cast<const char*>(data), size);
+          
+          auto current_light_state_call = id(current_light_state).make_call();
+          auto operation_mode_call = id(operation_mode).make_call();
+
+          if (received_command == "current_light_state_red") {
+            current_light_state_call.set_option("red");
+            current_light_state_call.perform();
+          } else if (received_command == "current_light_state_red-to-green") {
+            current_light_state_call.set_option("red-to-green");
+            current_light_state_call.perform();
+          } else if (received_command == "current_light_state_green") {
+            current_light_state_call.set_option("green");
+            current_light_state_call.perform();
+          } else if (received_command == "current_light_state_green-to-red") {
+            current_light_state_call.set_option("green-to-red");
+            current_light_state_call.perform();
+          } else if (received_command == "om_Automatik") {
+            operation_mode_call.set_option("Automatik");
+            operation_mode_call.perform();
+          } else if (received_command == "om_Manuell") {
+            operation_mode_call.set_option("Manuell");
+            operation_mode_call.perform();
+          } else if (received_command.rfind("delay_", 0) == 0) {
+            std::string delay_value = received_command.substr(6);
+            // convert to int
+            int delay_val = atoi(delay_value.c_str());
+            id(traffic_light_switch_delay).publish_state(delay_val);
+            ESP_LOGI("espnow", "delay found %s", delay_value.c_str());
+          } else if (received_command == "ping") {
+            id(send_pong).execute();
+          }
+          else {
+            ESP_LOGI("espnow", "Unhandled command %s", received_command.c_str());
+          }
+
+          id(script_display_page_run).execute();
+
+          // set connected state to true
+          id(connection_connected) = true;
+      - component.update: my_display
+
+globals:
+  - id: connection_connected
+    type: bool
+    initial_value: "false"
+
+image:
+  - file: "images/traffic-light-remote/sunflower003_wide_all_off.png"
+    type: RGB565
+    id: image_background
+
+  - file: "images/traffic-light-remote/sunflower003_wide_green_on.png"
+    type: RGB565
+    id: image_green_on
+
+  - file: "images/traffic-light-remote/sunflower003_wide_yellow_on.png"
+    type: RGB565
+    id: image_yellow_on
+
+  - file: "images/traffic-light-remote/sunflower003_wide_red_on.png"
+    type: RGB565
+    id: image_red_on
+
+  - file: "images/traffic-light-remote/m5stick_background_help.png"
+    type: RGB565
+    id: background_help     
+
+light:
+  - platform: monochromatic
+    output:  builtin_led
+    name: traffic light remote led
+    id: led1
+
+  - platform: monochromatic
+    output:  backlight
+    name: Backlight
+    id: display_bl
+    restore_mode: ALWAYS_ON
+
+number:
+  - platform: template
+    id: traffic_light_switch_delay
+    initial_value: 3
+    max_value: 20
+    min_value: 1
+    step: 1
+    optimistic: True
+
+output:
+  - platform: ledc
+    pin: 10
+    inverted: true
+    id: builtin_led
+
+  - platform: ledc
+    pin: 2
+    inverted: true
+    id: buzzer
+    max_power: 0.05
+
+  - platform: ledc
+    pin: 27
+    inverted: false
+    id: backlight
+    max_power: 0.8
+
+script:
+- id: send_pong
+  mode: queued
+  then:
+    - espnow.send:
+        address: $mac_traffic_light
+        data: "pong"
+
+- id: script_display_page_run
+  then: 
+    - display.page.show: run
+
+- id: draw_status_icons
+  then:
+    - lambda: |-          
+
+        auto battery_charge_level_icon = "\U000F1835";
+        float value = id(battery_charge_level).state;
+
+        if (value >= 100) {
+          battery_charge_level_icon = "\U000F0079";
+        } else if (value >= 90) {
+          battery_charge_level_icon = "\U000F0082";
+        } else if (value >= 80) {
+          battery_charge_level_icon = "\U000F0081";
+        } else if (value >= 70) {
+          battery_charge_level_icon = "\U000F0080";
+        } else if (value >= 60) {
+          battery_charge_level_icon = "\U000F007F";
+        } else if (value >= 50) {
+          battery_charge_level_icon = "\U000F007E";
+        } else if (value >= 40) {
+          battery_charge_level_icon = "\U000F007D";
+        } else if (value >= 30) {
+          battery_charge_level_icon = "\U000F007C";
+        } else if (value >= 20) {
+          battery_charge_level_icon = "\U000F007B";
+        } else if (value >= 10) {
+          battery_charge_level_icon = "\U000F007A";
+        } else if (value > 0) {
+          battery_charge_level_icon = "\U000F10CD";
+        }
+
+        // battery
+        id(my_display).print(id(my_display).get_width() - 2, 2, id(icon_font), id(color_white), TextAlign::TOP_RIGHT, battery_charge_level_icon, id(color_black));
+
+        if (!id(connection_connected)) {
+          id(my_display).print(id(my_display).get_width() - 20, 2, id(icon_font), id(color_white), TextAlign::TOP_RIGHT, "\U000F0EC4", id(color_black));
+        } else {
+          id(my_display).print(id(my_display).get_width() - 20, 2, id(icon_font), id(color_white), TextAlign::TOP_RIGHT, "\U000F0454", id(color_black));
+        }
+
+select:  
+  - platform: template
+    id: current_light_state
+    name: current_light_state
+    options: 
+      - red
+      - red-to-green
+      - green
+      - green-to-red
+    initial_option: red
+    optimistic: True
+
+  - platform: template
+    id: operation_mode
+    name: operation_mode
+    options: 
+      - Manuell
+      - Automatik
+    initial_option: Automatik
+    optimistic: true
+
+sensor:
+  - platform: adc
+    pin: GPIO38
+    id: battery_voltage
+    attenuation: 12db
+    update_interval: 30s
+    name: "Battery Voltage"
+    filters:
+      - multiply: 2.0
+
+  - platform: template
+    name: "battery charge level"
+    id: battery_charge_level
+    unit_of_measurement: "%"
+    update_interval: 30s
+    accuracy_decimals: 0
+    lambda: |-
+      return id(battery_voltage).state;
+    filters:
+      - calibrate_linear:
+        - 3.2 -> 0.0
+        - 3.95 -> 100.0
+      - clamp:
+          min_value: 0
+          max_value: 100
+          ignore_out_of_range: false
+
+    
